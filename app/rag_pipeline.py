@@ -9,24 +9,35 @@ import faiss
 from pypdf import PdfReader
 import tiktoken
 import streamlit as st
-from openai import OpenAI
+import google.generativeai as genai
 
 
 # ---------------- CONFIG ----------------
 
 @dataclass
 class RAGConfig:
-    embedding_model: str = "text-embedding-3-small"
+    # Gemini embedding model
+    embedding_model: str = "models/embedding-001" 
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 50
 
 
-# ---------------- CLIENT ----------------
+# ---------------- CLIENT HELPER ----------------
 
-def _get_openai_client() -> OpenAI:
-    # Helper to get the client using streamlit secrets
-    api_key = st.secrets["openai"]["api_key"]
-    return OpenAI(api_key=api_key)
+def _configure_gemini():
+    """Configures the Gemini client using available secrets."""
+    try:
+        # Check if [google] section exists, otherwise try root level or [gemini]
+        if "google" in st.secrets:
+            api_key = st.secrets["google"]["api_key"]
+        elif "gemini" in st.secrets:
+            api_key = st.secrets["gemini"]["api_key"]
+        else:
+            api_key = st.secrets.get("google_api_key", "")
+            
+        genai.configure(api_key=api_key)
+    except Exception as e:
+        st.error(f"Error configuring Gemini: {e}")
 
 
 # ---------------- VECTOR STORE ----------------
@@ -77,6 +88,7 @@ def _extract_text_from_pdf(file_bytes: bytes) -> str:
 # ---------------- CHUNKING ----------------
 
 def _chunk_text(text: str, max_tokens=500, overlap_tokens=50, encoding_name="cl100k_base"):
+    # We use tiktoken for rough token counting even for Gemini, as it's a good approximation
     enc = tiktoken.get_encoding(encoding_name)
     tokens = enc.encode(text)
 
@@ -98,7 +110,7 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
     if cfg is None:
         cfg = RAGConfig()
 
-    client = _get_openai_client()
+    _configure_gemini()
     all_chunks = []
     texts = []
 
@@ -129,20 +141,31 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
             texts.append(ch)
 
     if len(texts) == 0:
-        return RAGStore(dim=1536), []
+        # 768 is the dimension for Gemini embedding-001
+        return RAGStore(dim=768), []
 
     # Embed all chunks
     embeddings = []
-    batch_size = 64
+    batch_size = 20  # Gemini batch size limit is smaller than OpenAI's sometimes
 
     for i in range(0, len(texts), batch_size):
         batch = texts[i:i + batch_size]
-        resp = client.embeddings.create(
-            model=cfg.embedding_model,
-            input=batch,
-        )
-        emb = [d.embedding for d in resp.data]
-        embeddings.extend(emb)
+        try:
+            # Gemini Embedding Call
+            result = genai.embed_content(
+                model=cfg.embedding_model,
+                content=batch,
+                task_type="retrieval_document"
+            )
+            # result['embedding'] is a list of embeddings
+            emb = result['embedding']
+            embeddings.extend(emb)
+        except Exception as e:
+            st.error(f"Error embedding batch: {e}")
+            continue
+
+    if not embeddings:
+        return RAGStore(dim=768), []
 
     emb_array = np.array(embeddings, dtype="float32")
     dim = emb_array.shape[1]
@@ -159,20 +182,24 @@ def embed_query(text: str, cfg: RAGConfig | None = None) -> np.ndarray:
     if cfg is None:
         cfg = RAGConfig()
 
-    client = _get_openai_client()
-    resp = client.embeddings.create(
+    _configure_gemini()
+    
+    result = genai.embed_content(
         model=cfg.embedding_model,
-        input=[text],
+        content=text,
+        task_type="retrieval_query"
     )
-    return np.array(resp.data[0].embedding, dtype="float32")
+    return np.array(result['embedding'], dtype="float32")
 
 
 # ---------------- RAG TOOL (GENERATION) ----------------
 
 def rag_tool(store: RAGStore, question: str) -> str:
     """
-    Retrieves context from the store and generates an answer using OpenAI.
+    Retrieves context from the store and generates an answer using Gemini.
     """
+    _configure_gemini()
+
     # 1. Embed the user's question
     query_emb = embed_query(question)
     
@@ -185,8 +212,8 @@ def rag_tool(store: RAGStore, question: str) -> str:
     # 3. Construct context from results
     context_text = "\n\n---\n\n".join([doc["content"] for doc in results])
     
-    # 4. Generate answer using OpenAI
-    client = _get_openai_client()
+    # 4. Generate answer using Gemini
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     system_prompt = (
         "You are a helpful hotel booking assistant. "
@@ -194,17 +221,10 @@ def rag_tool(store: RAGStore, question: str) -> str:
         "If the answer is not in the context, say you don't know."
     )
     
-    user_prompt = f"Context:\n{context_text}\n\nQuestion: {question}"
+    user_prompt = f"{system_prompt}\n\nContext:\n{context_text}\n\nQuestion: {question}"
     
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo", # You can change this to gpt-4o-mini if available
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7
-        )
-        return response.choices[0].message.content
+        response = model.generate_content(user_prompt)
+        return response.text
     except Exception as e:
         return f"Error generating answer: {str(e)}"
