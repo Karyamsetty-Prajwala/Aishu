@@ -1,14 +1,14 @@
-# app/booking_flow.py
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, date, time
 from typing import Optional, Dict, Any, List
 import json
+import re
 
 import streamlit as st
 from email_validator import validate_email as _validate_email, EmailNotValidError
-from openai import OpenAI
+import google.generativeai as genai
 
 
 BOOKING_FIELDS = [
@@ -42,13 +42,6 @@ class BookingState:
             "date": self.date,
             "time": self.time,
         }
-
-
-# ----------------- FIXED OPENAI CLIENT ------------------------
-
-def _get_openai_client() -> OpenAI:
-    api_key = st.secrets["openai"]["api_key"]
-    return OpenAI(api_key=api_key)
 
 
 # ----------------- VALIDATORS ------------------------
@@ -100,34 +93,50 @@ def generate_confirmation_text(state: BookingState) -> str:
     )
 
 
-# ----------------- FIXED LLM EXTRACTION ------------------------
+# ----------------- GEMINI EXTRACTION ------------------------
+
+def _configure_gemini():
+    try:
+        # Check if [google] section exists, otherwise try root level or [gemini]
+        if "google" in st.secrets:
+            api_key = st.secrets["google"]["api_key"]
+        elif "gemini" in st.secrets:
+            api_key = st.secrets["gemini"]["api_key"]
+        else:
+            # Fallback for root level key
+            api_key = st.secrets.get("google_api_key", "")
+            
+        genai.configure(api_key=api_key)
+    except Exception as e:
+        st.error(f"Error configuring Gemini: {e}")
 
 def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, Any]:
-
-    client = _get_openai_client()
+    _configure_gemini()
+    
+    # Use flash model for speed
+    model = genai.GenerativeModel('gemini-1.5-flash')
 
     system_prompt = (
         "You extract booking fields from user text. "
-        "Return a JSON object with keys: customer_name, email, phone, booking_type, date, time. "
+        "Return a valid JSON object (no markdown formatting) with keys: "
+        "customer_name, email, phone, booking_type, date, time. "
         "Use date format YYYY-MM-DD and time HH:MM (24-hour). "
-        "If a field is missing, set it to null."
+        "If a field is missing, set it to null. "
+        "Do not include ```json ... ``` wrappers, just raw JSON."
     )
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        response_format={"type": "json_object"},
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": message},
-        ],
-        temperature=0,
-    )
+    prompt = f"{system_prompt}\n\nUser Message: {message}"
 
     try:
-        # gpt-4o-mini returns stringified JSON
-        content = response.choices[0].message.content
+        response = model.generate_content(prompt)
+        content = response.text
+        
+        # Clean up potential markdown formatting from Gemini
+        content = content.replace("```json", "").replace("```", "").strip()
+        
         return json.loads(content)
-    except:
+    except Exception as e:
+        # print(f"Gemini Extraction Error: {e}")
         return {}
 
 
