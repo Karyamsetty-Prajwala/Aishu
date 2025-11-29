@@ -6,9 +6,9 @@ from rag_pipeline import rag_tool
 from tools import booking_persistence_tool, email_tool_with_pdf # MODIFIED NAME
 from admin_dashboard import render_admin_dashboard
 
-# --- Add project root to sys.path ---
+
 current_dir = os.path.dirname(os.path.abspath(__file__))
-parent_dir = os.path.dirname(current_dir)
+parent_dir = os.path.dirname(current_dir) # This should be the 'aishu' folder
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
