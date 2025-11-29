@@ -29,6 +29,9 @@ class BookingState:
     booking_type: Optional[str] = None
     date: Optional[date] = None
     time: Optional[time] = None
+    
+    # --- ADDED: Flag to track if booking is currently in progress ---
+    active: bool = False 
 
     awaiting_confirmation: bool = False
     errors: Dict[str, str] = field(default_factory=dict)
