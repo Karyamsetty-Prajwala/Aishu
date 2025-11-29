@@ -10,7 +10,7 @@ from pypdf import PdfReader
 import tiktoken
 import streamlit as st
 import google.generativeai as genai
-# --- NEW: Local Embeddings ---
+# Local Embeddings
 from sentence_transformers import SentenceTransformer
 
 
@@ -18,7 +18,7 @@ from sentence_transformers import SentenceTransformer
 
 @dataclass
 class RAGConfig:
-    # We use a standard, small, fast local model
+    # Use local embeddings to avoid rate limits
     embedding_model: str = "all-MiniLM-L6-v2"
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 50
@@ -29,7 +29,6 @@ class RAGConfig:
 def _configure_gemini():
     """Configures the Gemini client using available secrets."""
     try:
-        # Check if [google] section exists, otherwise try root level or [gemini]
         if "google" in st.secrets:
             api_key = st.secrets["google"]["api_key"]
         elif "gemini" in st.secrets:
@@ -43,18 +42,12 @@ def _configure_gemini():
 
 @st.cache_resource
 def _get_embedding_model():
-    """
-    Loads the local embedding model once and caches it in memory.
-    This prevents reloading it on every interaction.
-    """
     return SentenceTransformer('all-MiniLM-L6-v2')
 
 
 # ---------------- VECTOR STORE ----------------
 
 class RAGStore:
-    """FAISS vector DB with embeddings & metadata."""
-
     def __init__(self, dim: int):
         self.index = faiss.IndexFlatL2(dim)
         self.docs: List[Dict[str, Any]] = []
@@ -98,7 +91,6 @@ def _extract_text_from_pdf(file_bytes: bytes) -> str:
 # ---------------- CHUNKING ----------------
 
 def _chunk_text(text: str, max_tokens=500, overlap_tokens=50, encoding_name="cl100k_base"):
-    # We use tiktoken for rough token counting
     enc = tiktoken.get_encoding(encoding_name)
     tokens = enc.encode(text)
 
@@ -120,13 +112,11 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
     if cfg is None:
         cfg = RAGConfig()
 
-    # Load local model (cached)
     embed_model = _get_embedding_model()
     
     all_chunks = []
     texts = []
 
-    # Extract and chunk PDFs
     for file in uploaded_files:
         try:
             raw = file.read()
@@ -152,12 +142,9 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
             })
             texts.append(ch)
 
-    # 384 is the dimension for all-MiniLM-L6-v2
     if len(texts) == 0:
         return RAGStore(dim=384), []
 
-    # Embed all chunks LOCALLY
-    # This runs on the CPU and has NO rate limits.
     try:
         embeddings = embed_model.encode(texts, convert_to_numpy=True)
     except Exception as e:
@@ -179,10 +166,7 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
 # ---------------- QUERY EMBEDDING ----------------
 
 def embed_query(text: str, cfg: RAGConfig | None = None) -> np.ndarray:
-    # Load local model (cached)
     embed_model = _get_embedding_model()
-    
-    # Generate embedding locally
     embedding = embed_model.encode([text], convert_to_numpy=True)[0]
     return np.array(embedding, dtype="float32")
 
@@ -190,26 +174,18 @@ def embed_query(text: str, cfg: RAGConfig | None = None) -> np.ndarray:
 # ---------------- RAG TOOL (GENERATION) ----------------
 
 def rag_tool(store: RAGStore, question: str) -> str:
-    """
-    Retrieves context from the store and generates an answer using Gemini.
-    """
     _configure_gemini()
 
-    # 1. Embed the user's question LOCALLY
     query_emb = embed_query(question)
-    
-    # 2. Search for relevant chunks (Top 4)
     results = store.similarity_search(query_emb, k=4)
     
     if not results:
         return "I couldn't find any information about that in the uploaded documents."
     
-    # 3. Construct context from results
     context_text = "\n\n---\n\n".join([doc["content"] for doc in results])
     
-    # 4. Generate answer using Gemini (API)
-    # This is fine because it's just ONE call per user question.
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # --- CHANGED: Switched to gemini-pro to fix 404 error ---
+    model = genai.GenerativeModel('gemini-pro')
     
     system_prompt = (
         "You are a helpful hotel booking assistant. "

@@ -30,7 +30,6 @@ class BookingState:
     date: Optional[date] = None
     time: Optional[time] = None
     
-    # --- ADDED: Flag to track if booking is currently in progress ---
     active: bool = False 
 
     awaiting_confirmation: bool = False
@@ -100,13 +99,11 @@ def generate_confirmation_text(state: BookingState) -> str:
 
 def _configure_gemini():
     try:
-        # Check if [google] section exists, otherwise try root level or [gemini]
         if "google" in st.secrets:
             api_key = st.secrets["google"]["api_key"]
         elif "gemini" in st.secrets:
             api_key = st.secrets["gemini"]["api_key"]
         else:
-            # Fallback for root level key
             api_key = st.secrets.get("google_api_key", "")
             
         genai.configure(api_key=api_key)
@@ -116,12 +113,9 @@ def _configure_gemini():
 def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, Any]:
     _configure_gemini()
     
-    # Use flash model for speed
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # --- CHANGED: Switched to gemini-pro to fix 404 error ---
+    model = genai.GenerativeModel('gemini-pro')
 
-    # --- CONTEXT AWARENESS FIX ---
-    # We check what is missing to give the LLM a hint.
-    # If the bot just asked "What is your name?", we tell the LLM to expect a name.
     missing = get_missing_fields(state)
     expected_field = missing[0] if missing else "none"
     today = date.today().isoformat()
@@ -144,7 +138,6 @@ def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, A
         response = model.generate_content(prompt)
         content = response.text
         
-        # Clean up potential markdown formatting from Gemini
         content = content.replace("```json", "").replace("```", "").strip()
         
         return json.loads(content)
@@ -157,8 +150,6 @@ def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, A
 
 def update_state_from_message(message: str, state: BookingState) -> BookingState:
     
-    # --- ACTIVE FLAG FIX ---
-    # Ensure the session stays active whenever we process a message
     state.active = True
 
     extracted = llm_extract_booking_fields(message, state)
