@@ -20,3 +20,4 @@ python-dotenv
 email-validator
 sentence-transformers
 fpdf2
+supabase-py
