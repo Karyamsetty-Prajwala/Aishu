@@ -19,3 +19,4 @@ numpy
 python-dotenv
 email-validator
 sentence-transformers
+fpdf2

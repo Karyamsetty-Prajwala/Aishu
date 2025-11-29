@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sys
 import os
+from rag_pipeline import rag_tool
+from tools import booking_persistence_tool, email_tool_with_pdf # MODIFIED NAME
+from admin_dashboard import render_admin_dashboard
 
 # --- Add project root to sys.path ---
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -167,17 +170,23 @@ def handle_booking_intent(cfg, user_message: str):
                 return
 
             booking_id = result["booking_id"]
+    
+            full_payload = payload.copy() 
+            full_payload["ID"] = booking_id
+
             email_body = (
                 "Your hotel booking is confirmed.\n\n"
                 f"Booking ID: {booking_id}\n\n"
-                f"{generate_confirmation_text(state)}"
+                "Please find your complete booking details attached as a PDF." # Simplified body
             )
 
-            email_result = email_tool(
+            # --- CALL NEW FUNCTION ---
+            email_result = email_tool_with_pdf( # MODIFIED FUNCTION CALL
                 cfg,
                 to_email=state.email,
-                subject="Hotel Booking Confirmation",
-                body=email_body,
+                subject="Hotel Booking Confirmation (Attached PDF)",
+                body_text=email_body, # Renamed body to body_text
+                booking_payload=full_payload, # PASS THE FULL PAYLOAD
             )
 
             if not email_result["success"]:
