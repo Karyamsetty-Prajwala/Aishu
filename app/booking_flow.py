@@ -114,7 +114,7 @@ def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, A
     _configure_gemini()
     
     # UPDATED MODEL NAME
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model=genai.GenerativeModel(model_name='gemini-2.5-flash')
 
     missing = get_missing_fields(state)
     expected_field = missing[0] if missing else "none"

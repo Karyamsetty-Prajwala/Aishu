@@ -185,7 +185,7 @@ def rag_tool(store: RAGStore, question: str) -> str:
     context_text = "\n\n---\n\n".join([doc["content"] for doc in results])
     
     # --- CHANGED: Use gemini-1.5-flash. Requires google-generativeai>=0.7.0 ---
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model=genai.GenerativeModel(model_name='gemini-2.5-flash')
     
     system_prompt = (
         "You are a helpful hotel booking assistant. "
