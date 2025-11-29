@@ -107,24 +107,23 @@ def run_chat_assistant(cfg):
         "check-in", "check-out", "policy", "refund", "cancel",
         "breakfast", "food", "restaurant", "location", "near"
     ]
+    
+    # 1. Global RAG Override (Highest Priority)
+    # If the user asks about price/amenities, ALWAYS answer it, 
+    # regardless of whether a booking is active or what the intent detector says.
+    if any(kw in user_input.lower() for kw in rag_keywords):
+        final_intent = "faq_rag"
 
-    # Check context: Are we in an active booking?
-    if st.session_state.booking_state.active:
-        # 1. Check for manual keyword overrides (Stronger than intent detector)
-        if any(kw in user_input.lower() for kw in rag_keywords):
-            final_intent = "faq_rag"
-            
-        # 2. If the detected intent says FAQ, trust it
-        elif detected_intent == "faq_rag":
-            final_intent = "faq_rag"
-            
-        # 3. Check for cancellation
-        elif "cancel" in user_input.lower():
-            final_intent = "booking" 
-            
-        # 4. If unclear (e.g., "John", "Deluxe"), assume it's booking data
-        elif detected_intent == "unknown" or detected_intent == "small_talk":
-             final_intent = "booking"
+    # 2. Active Booking Logic
+    elif st.session_state.booking_state.active:
+        if "cancel" in user_input.lower():
+            final_intent = "booking"
+        elif detected_intent == "faq_rag": 
+             # Trust detector if it found RAG intent even without keywords
+             final_intent = "faq_rag"
+        else:
+            # Otherwise, assume the user is answering the booking question
+            final_intent = "booking"
 
     # Dispatch
     if final_intent == "booking":
