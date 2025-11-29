@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import List, Dict, Any
 from dataclasses import dataclass
 from io import BytesIO
-import time  # --- Added to handle rate limiting
 
 import numpy as np
 import faiss
@@ -11,14 +10,16 @@ from pypdf import PdfReader
 import tiktoken
 import streamlit as st
 import google.generativeai as genai
+# --- NEW: Local Embeddings ---
+from sentence_transformers import SentenceTransformer
 
 
 # ---------------- CONFIG ----------------
 
 @dataclass
 class RAGConfig:
-    # Gemini embedding model
-    embedding_model: str = "models/embedding-001" 
+    # We use a standard, small, fast local model
+    embedding_model: str = "all-MiniLM-L6-v2"
     chunk_size_tokens: int = 500
     chunk_overlap_tokens: int = 50
 
@@ -39,6 +40,14 @@ def _configure_gemini():
         genai.configure(api_key=api_key)
     except Exception as e:
         st.error(f"Error configuring Gemini: {e}")
+
+@st.cache_resource
+def _get_embedding_model():
+    """
+    Loads the local embedding model once and caches it in memory.
+    This prevents reloading it on every interaction.
+    """
+    return SentenceTransformer('all-MiniLM-L6-v2')
 
 
 # ---------------- VECTOR STORE ----------------
@@ -89,7 +98,7 @@ def _extract_text_from_pdf(file_bytes: bytes) -> str:
 # ---------------- CHUNKING ----------------
 
 def _chunk_text(text: str, max_tokens=500, overlap_tokens=50, encoding_name="cl100k_base"):
-    # We use tiktoken for rough token counting even for Gemini, as it's a good approximation
+    # We use tiktoken for rough token counting
     enc = tiktoken.get_encoding(encoding_name)
     tokens = enc.encode(text)
 
@@ -111,7 +120,9 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
     if cfg is None:
         cfg = RAGConfig()
 
-    _configure_gemini()
+    # Load local model (cached)
+    embed_model = _get_embedding_model()
+    
     all_chunks = []
     texts = []
 
@@ -141,55 +152,20 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
             })
             texts.append(ch)
 
+    # 384 is the dimension for all-MiniLM-L6-v2
     if len(texts) == 0:
-        # 768 is the dimension for Gemini embedding-001
-        return RAGStore(dim=768), []
+        return RAGStore(dim=384), []
 
-    # Embed all chunks
-    embeddings = []
-    
-    # --- RATE LIMIT FIX 2.0 ---
-    # Drastically reduced batch size and strict retry logic
-    batch_size = 5  
+    # Embed all chunks LOCALLY
+    # This runs on the CPU and has NO rate limits.
+    try:
+        embeddings = embed_model.encode(texts, convert_to_numpy=True)
+    except Exception as e:
+        st.error(f"Error generating embeddings locally: {e}")
+        return RAGStore(dim=384), []
 
-    for i in range(0, len(texts), batch_size):
-        batch = texts[i:i + batch_size]
-        
-        # Retry loop with exponential backoff
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                # Gemini Embedding Call
-                result = genai.embed_content(
-                    model=cfg.embedding_model,
-                    content=batch,
-                    task_type="retrieval_document"
-                )
-                emb = result['embedding']
-                embeddings.extend(emb)
-                
-                # Success! Sleep to respect free tier rate limits
-                time.sleep(4.0) 
-                break # Exit the retry loop
-                
-            except Exception as e:
-                # Check for rate limit errors
-                if "429" in str(e) or "Quota" in str(e):
-                    if attempt < max_retries - 1:
-                        # Exponential backoff: 20s, 40s, 60s
-                        wait_time = (attempt + 1) * 20 
-                        st.warning(f"Rate limit hit. Pausing for {wait_time} seconds before retrying...")
-                        time.sleep(wait_time)
-                        continue
-                    else:
-                        st.error(f"Failed to embed batch after {max_retries} retries. You may have hit the daily quota.")
-                else:
-                    # Non-quota error, log and skip this batch
-                    st.error(f"Error embedding batch: {e}")
-                    break
-
-    if not embeddings:
-        return RAGStore(dim=768), []
+    if embeddings.size == 0:
+        return RAGStore(dim=384), []
 
     emb_array = np.array(embeddings, dtype="float32")
     dim = emb_array.shape[1]
@@ -203,17 +179,12 @@ def build_rag_store_from_uploads(uploaded_files, cfg: RAGConfig | None = None):
 # ---------------- QUERY EMBEDDING ----------------
 
 def embed_query(text: str, cfg: RAGConfig | None = None) -> np.ndarray:
-    if cfg is None:
-        cfg = RAGConfig()
-
-    _configure_gemini()
+    # Load local model (cached)
+    embed_model = _get_embedding_model()
     
-    result = genai.embed_content(
-        model=cfg.embedding_model,
-        content=text,
-        task_type="retrieval_query"
-    )
-    return np.array(result['embedding'], dtype="float32")
+    # Generate embedding locally
+    embedding = embed_model.encode([text], convert_to_numpy=True)[0]
+    return np.array(embedding, dtype="float32")
 
 
 # ---------------- RAG TOOL (GENERATION) ----------------
@@ -224,7 +195,7 @@ def rag_tool(store: RAGStore, question: str) -> str:
     """
     _configure_gemini()
 
-    # 1. Embed the user's question
+    # 1. Embed the user's question LOCALLY
     query_emb = embed_query(question)
     
     # 2. Search for relevant chunks (Top 4)
@@ -236,7 +207,8 @@ def rag_tool(store: RAGStore, question: str) -> str:
     # 3. Construct context from results
     context_text = "\n\n---\n\n".join([doc["content"] for doc in results])
     
-    # 4. Generate answer using Gemini
+    # 4. Generate answer using Gemini (API)
+    # This is fine because it's just ONE call per user question.
     model = genai.GenerativeModel('gemini-1.5-flash')
     
     system_prompt = (
