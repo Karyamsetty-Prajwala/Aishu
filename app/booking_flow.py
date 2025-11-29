@@ -113,7 +113,7 @@ def _configure_gemini():
 def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, Any]:
     _configure_gemini()
     
-    # --- CHANGED: Use gemini-1.5-flash with updated requirements.txt ---
+    # Use gemini-1.5-flash
     model = genai.GenerativeModel('gemini-1.5-flash')
 
     missing = get_missing_fields(state)
@@ -138,11 +138,18 @@ def llm_extract_booking_fields(message: str, state: BookingState) -> Dict[str, A
         response = model.generate_content(prompt)
         content = response.text
         
+        # Clean up code blocks
         content = content.replace("```json", "").replace("```", "").strip()
         
+        # If model returns empty, return empty dict
+        if not content:
+            return {}
+
         return json.loads(content)
+
     except Exception as e:
-        # print(f"Gemini Extraction Error: {e}")
+        # --- DEBUG: Show error in UI so we know WHY it failed ---
+        st.error(f"Extraction Error: {str(e)}")
         return {}
 
 
